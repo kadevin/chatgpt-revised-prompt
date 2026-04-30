@@ -145,3 +145,16 @@ MIT License — free to use, modify, and distribute.
 ## Contributing
 
 Pull Requests and Issues are welcome! If ChatGPT updates their API structure and the script breaks, please open an issue with the conversation API response snippet.
+
+---
+
+## 联系作者 / Contact
+
+欢迎添加微信交流 **AI 编程** 和 **AI 生图** 经验，一起探索更多玩法 🤝
+
+Feel free to connect on WeChat to discuss **AI programming** and **AI image generation** tips!
+
+<p align="center">
+  <img src="assets/wechat-qr.jpg" alt="iLab WeChat QR Code" width="240" />
+</p>
+
