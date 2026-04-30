@@ -389,11 +389,19 @@ function getOrderedPath(mapping) {
 }
 
 // ===== 提取图片 URL =====
+// ChatGPT 图片在 API 中使用 asset_pointer 格式: "file-service://file-xxxx"
+// 需要从 DOM 中匹配对应的 <img> 元素获取真实 URL
 function extractImageUrlsFromParts(parts) {
     const urls = [];
+    const fileIds = [];
     for (const part of parts) {
         if (!part || typeof part !== 'object') continue;
-        // Direct URL
+        // asset_pointer: "file-service://file-xxxx" (最常见的格式)
+        if (part.asset_pointer && typeof part.asset_pointer === 'string') {
+            const fid = part.asset_pointer.replace('file-service://', '');
+            if (fid) fileIds.push(fid);
+        }
+        // Direct URL fallbacks
         if (typeof part.url === 'string' && part.url.startsWith('http')) urls.push(part.url);
         if (part.image_url?.url) urls.push(part.image_url.url);
         // metadata sources
@@ -404,14 +412,54 @@ function extractImageUrlsFromParts(parts) {
         if (dalle?.image_url) urls.push(dalle.image_url);
         if (dalle?.url) urls.push(dalle.url);
     }
+    // 从 DOM 中通过 file ID 查找实际图片 URL
+    for (const fid of fileIds) {
+        const img = document.querySelector(`img[src*="${fid}"]`);
+        if (img && img.src) {
+            urls.push(img.src);
+            log('🖼️ 通过 asset_pointer 匹配到图片:', fid);
+        } else {
+            log('⚠️ DOM 中未找到 asset_pointer 图片:', fid);
+        }
+    }
     return [...new Set(urls)];
 }
 
+// 收集 parts 中所有 file ID (用于延迟匹配)
+function extractFileIdsFromParts(parts) {
+    const ids = [];
+    for (const part of parts) {
+        if (!part || typeof part !== 'object') continue;
+        if (part.asset_pointer && typeof part.asset_pointer === 'string') {
+            ids.push(part.asset_pointer.replace('file-service://', ''));
+        }
+    }
+    return ids;
+}
+
+function getAllDomImages() {
+    const selectors = [
+        'img[src*="oaiusercontent"]',
+        'img[src*="files.oaiusercontent.com"]',
+        'img[src*="openai.com/files"]',
+        '[data-message-id] img[src^="https"][alt]:not([src*="cdn.openai"])',
+    ];
+    return [...document.querySelectorAll(selectors.join(','))]
+        .map(i => i.src)
+        .filter(s => s.startsWith('http') && !s.includes('favicon') && !s.includes('sprites'));
+}
+
 function getImagesFromDomByMsgId(msgId) {
-    const el = msgId ? document.querySelector(`[data-message-id="${msgId}"]`) : null;
-    if (!el) return [];
-    return [...el.querySelectorAll('img[src*="oaiusercontent"],img[src*="files.oai"],img[src*="dalle"]')]
-        .map(i => i.src).filter(s => s.startsWith('http'));
+    if (!msgId) return [];
+    // 先精确匹配 data-message-id
+    let el = document.querySelector(`[data-message-id="${msgId}"]`);
+    if (el) {
+        const imgs = [...el.querySelectorAll('img[src^="https"]')]
+            .map(i => i.src)
+            .filter(s => s.includes('oaiusercontent') || s.includes('openai'));
+        if (imgs.length) return imgs;
+    }
+    return [];
 }
 
 // ===== 核心提取 =====
@@ -525,31 +573,55 @@ function extractPromptsFromCode(codeText) {
 }
 
 // ===== 用 DOM 补充图片 URL =====
-function enrichWithDomImages(rounds) {
-    // Collect all DOM images in document order
-    const domImgs = [...document.querySelectorAll(
-        'img[src*="oaiusercontent"],img[src*="files.oai"],img[src*="dalle-service"]'
-    )].map(i => i.src).filter(s => s.startsWith('http'));
+function enrichWithDomImages(rounds, conversationData) {
+    const domImgs = getAllDomImages();
+    log('🖼️ DOM 中找到图片数:', domImgs.length, domImgs.slice(0, 3));
 
-    if (!domImgs.length) return;
+    const allP = rounds.flatMap(r => r.prompts);
+    const noImg = allP.filter(p => p.imageUrls.length === 0);
+    if (!noImg.length && domImgs.length === 0) return;
 
-    // Prompts that have no images yet
-    const noImg = rounds.flatMap(r => r.prompts).filter(p => p.imageUrls.length === 0);
-    if (!noImg.length) return;
-
-    // Try msgId-based DOM lookup first
-    for (const item of noImg) {
-        if (item.lastAssistantMsgId) {
-            const urls = getImagesFromDomByMsgId(item.lastAssistantMsgId);
-            if (urls.length) { item.imageUrls = urls; }
+    // 策略1: 用 file ID 从 API 数据重新匹配 DOM
+    if (conversationData?.mapping) {
+        for (const item of noImg) {
+            if (!item.toolMsgId) continue;
+            // 找到对应的 tool message
+            for (const [, node] of Object.entries(conversationData.mapping)) {
+                if (node?.message?.id === item.toolMsgId) {
+                    const parts = node.message.content?.parts;
+                    if (!Array.isArray(parts)) break;
+                    const fileIds = extractFileIdsFromParts(parts);
+                    for (const fid of fileIds) {
+                        const domMatch = domImgs.find(url => url.includes(fid));
+                        if (domMatch && !item.imageUrls.includes(domMatch)) {
+                            item.imageUrls.push(domMatch);
+                            log('🖼️ 延迟匹配 file ID:', fid);
+                        }
+                    }
+                    break;
+                }
+            }
         }
     }
 
-    // Still nothing: distribute domImgs sequentially (1 image per prompt)
-    let imgIdx = 0;
-    for (const item of rounds.flatMap(r => r.prompts)) {
-        if (item.imageUrls.length === 0 && imgIdx < domImgs.length) {
-            item.imageUrls = [domImgs[imgIdx++]];
+    // 策略2: 通过 data-message-id 在 DOM 中查找
+    for (const item of allP.filter(p => p.imageUrls.length === 0)) {
+        const tryIds = [item.toolMsgId, item.lastAssistantMsgId].filter(Boolean);
+        for (const mid of tryIds) {
+            const urls = getImagesFromDomByMsgId(mid);
+            if (urls.length) { item.imageUrls = urls; break; }
+        }
+    }
+
+    // 策略3: 按顺序分配剩余 DOM 图片
+    if (domImgs.length > 0) {
+        const usedUrls = new Set(allP.flatMap(p => p.imageUrls));
+        const unusedDomImgs = domImgs.filter(u => !usedUrls.has(u));
+        let idx = 0;
+        for (const item of allP.filter(p => p.imageUrls.length === 0)) {
+            if (idx < unusedDomImgs.length) {
+                item.imageUrls = [unusedDomImgs[idx++]];
+            }
         }
     }
 }
@@ -576,13 +648,25 @@ async function fetchAndExtractPrompts() {
         seenPrompts.clear();
         allRounds.flatMap(r => r.prompts).forEach(p => seenPrompts.add(p.prompt));
 
-        enrichWithDomImages(allRounds);
+        // 第一次尝试匹配图片
+        enrichWithDomImages(allRounds, data);
 
         const total = allRounds.reduce((s,r) => s + r.prompts.length, 0);
         log(`✅ 提取 ${total} 个提示词，${allRounds.length} 轮对话`);
         showStatus(`找到 ${total} 个提示词 / ${allRounds.length} 轮`);
 
         renderPanel();
+
+        // 延迟 3 秒再试一次 (等待 DOM 图片加载)
+        const noImgCount = allRounds.flatMap(r => r.prompts).filter(p => p.imageUrls.length === 0).length;
+        if (noImgCount > 0) {
+            log(`⏳ ${noImgCount} 个提示词无图片，3秒后重试DOM匹配...`);
+            setTimeout(() => {
+                enrichWithDomImages(allRounds, data);
+                renderPanel();
+                log('🔄 延迟图片匹配完成');
+            }, 3000);
+        }
     } catch(e) {
         log('❌', e.message); showStatus('请求失败: ' + e.message);
     }
@@ -607,10 +691,14 @@ function startMonitoring() {
     const obs = new MutationObserver(() => {
         if (debounce) clearTimeout(debounce);
         debounce = setTimeout(() => {
-            const imgs = document.querySelectorAll('img[src*="oaiusercontent"],img[src*="files.oai"]');
+            const imgs = getAllDomImages();
             const total = allRounds.reduce((s,r) => s + r.prompts.length, 0);
             if (imgs.length > 0 && total === 0 && getConversationId()) fetchAndExtractPrompts();
-            else if (imgs.length > 0 && total > 0) { enrichWithDomImages(allRounds); renderPanel(); }
+            else if (imgs.length > 0 && total > 0) {
+                // 检查是否有提示词还没图片
+                const noImgCount = allRounds.flatMap(r => r.prompts).filter(p => p.imageUrls.length === 0).length;
+                if (noImgCount > 0) { enrichWithDomImages(allRounds, null); renderPanel(); }
+            }
         }, 3000);
     });
     obs.observe(document.body, { childList: true, subtree: true });
