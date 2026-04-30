@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.0.0] - 2026-04-30
+
+### Added
+- **Thumbnail previews**: each prompt card now displays a thumbnail of its generated image
+- **Multi-select & batch download**: checkbox on every card, select all / deselect all, download selected or all images
+- **Round-based grouping**: prompts are visually separated into chat rounds with dividers (第 1 轮, 第 2 轮…)
+- **Image gallery**: expanded card shows full-size images, click to open in new tab
+- **Lazy image resolution**: file IDs from API (`asset_pointer`) are matched to DOM images on each render, with 3-second delayed retry
+- Footer bar with "下载选中" and "全部下载" buttons
+
+### Changed
+- Image extraction now handles ChatGPT's `asset_pointer: "file-service://file-xxxx"` format
+- DOM image selectors broadened to cover all generated images within the chat area
+- Round numbering filters out system and context messages, renumbers after filtering
+- Download button counts selected items (not just images)
+
+### Fixed
+- Round numbering skipping round 1 (was caused by system/user_editable_context nodes)
+- Download button always showing (0) when images hadn't loaded yet
+- Images not matching due to narrow DOM selectors
+
+---
+
 ## [3.0.0] - 2026-04-30
 
 ### Added

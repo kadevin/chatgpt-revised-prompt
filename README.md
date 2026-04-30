@@ -1,6 +1,6 @@
 # ChatGPT Revised Prompt Extractor
 
-> A Tampermonkey userscript that extracts and displays the hidden optimized image generation prompts from ChatGPT.
+> Extract and manage the hidden optimized image generation prompts from ChatGPT — with thumbnails, batch download, and round-based grouping.
 
 [![GreasyFork](https://img.shields.io/badge/GreasyFork-Install-brightgreen?logo=greasyfork&logoColor=white)](https://greasyfork.org/scripts/575990)
 [![GitHub](https://img.shields.io/badge/GitHub-Source-black?logo=github)](https://github.com/kadevin/chatgpt-revised-prompt)
@@ -16,17 +16,27 @@
 
 When you ask ChatGPT to generate images using DALL-E 3 / GPT-image-2, it internally rewrites your original prompt into a much more detailed and optimized version before sending it to the image model. This **revised prompt** is usually hidden from you — this userscript surfaces it.
 
-A floating button (🖌) will appear in the bottom-right corner whenever revised prompts are detected. Click to expand a panel listing all prompts, each collapsible and copyable.
+A floating button (🖌) will appear in the bottom-right corner whenever revised prompts are detected. Click to expand a full-featured management panel.
 
 ### Features
 
+**Core**
 - ✅ Extracts revised prompts from ChatGPT image generation conversations
+- ✅ Multi-strategy extraction (code blocks, tool messages, DALL-E metadata)
+- ✅ Cleans up internal control tokens like `<|has_watermark|>`
+
+**v4.0 — Visual Management**
+- 🖼️ **Thumbnail preview** — each prompt card shows its generated image thumbnail
+- ☑️ **Multi-select** — checkbox on every card, "Select All" in header
+- 📥 **Batch download** — download selected or all images in one click
+- 🔲 **Round grouping** — multi-turn conversations are visually separated with dividers (Round 1, Round 2…)
+- 🖼️ **Image gallery** — expand a card to see full-size images, click to open in new tab
+
+**UI/UX**
 - ✅ Floating button with badge count — non-intrusive, always accessible
 - ✅ Collapsible cards per prompt — keeps UI clean for multi-image sessions
 - ✅ One-click copy to clipboard
-- ✅ Multi-strategy extraction (code blocks, tool messages, metadata)
 - ✅ Dark mode compatible
-- ✅ Cleans up internal control tokens like `<|has_watermark|>`
 - ✅ SPA navigation aware — resets on conversation switch
 
 ### Installation
@@ -54,9 +64,12 @@ The script polls the ChatGPT backend API (`/backend-api/conversation/{id}`) usin
 |----------|--------|-------------|
 | A | `assistant` code messages | Parses `image_gen.text2im(prompt=...)` Python-style calls |
 | B | `tool` multimodal_text messages | Extracts `Model caption: ...` strings and part metadata |
+| C | `tool` asset_pointer | Resolves `file-service://file-xxxx` → DOM image matching |
 | D | Message `metadata.dalle` | Traditional DALL-E metadata field |
 | E | `metadata.image_generation` | Image generation metadata object |
 | F | `metadata.aggregate_result.dalle` | Aggregate result prompts array |
+
+**Image Resolution**: Images are matched via a 3-tier strategy — first by `asset_pointer` file ID lookup in DOM, then by `data-message-id` DOM query, and finally by sequential assignment of unmatched DOM images. A delayed retry (3s) ensures images that load after API data are also captured.
 
 ### Permissions
 
@@ -79,17 +92,27 @@ The script uses `@grant none`, meaning it runs in the page's own JavaScript cont
 
 当你要求 ChatGPT 使用 DALL-E 3 / GPT-image-2 生成图片时，它会在内部将你的原始提示词改写成一个更详细、更优化的版本，再发送给图像模型。这个**优化后的提示词（revised prompt）** 通常对用户是隐藏的 —— 这个油猴脚本就是用来将它提取并显示出来的。
 
-当检测到优化提示词时，页面右下角会出现一个悬浮按钮（画笔图标），点击即可展开面板，每条提示词可单独折叠/展开并一键复制。
+当检测到优化提示词时，页面右下角会出现一个悬浮按钮（画笔图标），点击即可展开完整的管理面板。
 
 ### 功能特性
 
+**核心功能**
 - ✅ 提取 ChatGPT 图片生成对话中的优化提示词
+- ✅ 多策略提取（代码块、tool 消息、DALL-E metadata）
+- ✅ 自动清除 `<|has_watermark|>` 等内部控制标记
+
+**v4.0 — 可视化管理**
+- 🖼️ **缩略图预览** — 每条提示词卡片前展示对应图片的缩略图
+- ☑️ **多选操作** — 每张卡片可勾选，支持全选/取消全选
+- 📥 **批量下载** — 一键下载选中或全部图片
+- 🔲 **轮次分组** — 多轮对话用分割线隔开（第 1 轮、第 2 轮……）
+- 🖼️ **图片画廊** — 展开卡片查看完整图片，点击可在新标签页打开
+
+**界面体验**
 - ✅ 悬浮按钮 + 角标计数，不遮挡页面内容
 - ✅ 每条提示词独立折叠卡片，多图场景下界面整洁
 - ✅ 一键复制到剪贴板
-- ✅ 多策略提取（代码块、tool 消息、metadata）
 - ✅ 支持暗色模式
-- ✅ 自动清除 `<|has_watermark|>` 等内部控制标记
 - ✅ 感知 SPA 导航，切换对话时自动重置
 
 ### 安装方法
@@ -117,9 +140,12 @@ The script uses `@grant none`, meaning it runs in the page's own JavaScript cont
 |------|---------|------|
 | A | `assistant` code 消息 | 解析 `image_gen.text2im(prompt=...)` Python 风格调用 |
 | B | `tool` multimodal_text 消息 | 提取 `Model caption: ...` 字符串及 part 元数据 |
+| C | `tool` asset_pointer | 解析 `file-service://file-xxxx` → DOM 图片匹配 |
 | D | 消息 `metadata.dalle` | 传统 DALL-E metadata 字段 |
 | E | `metadata.image_generation` | 图片生成元数据对象 |
 | F | `metadata.aggregate_result.dalle` | 聚合结果的 prompts 数组 |
+
+**图片解析**：采用三级策略匹配 — 首先通过 `asset_pointer` 的 file ID 在 DOM 中查找，其次通过 `data-message-id` 定位，最后按顺序分配剩余 DOM 图片。并有 3 秒延迟重试机制确保延迟加载的图片也能被捕获。
 
 ### 权限说明
 
@@ -135,6 +161,9 @@ A: 这条对话可能暂时没有检测到图片，或 API 返回数据还在加
 
 **Q: 提示词获取是实时的吗？**  
 A: 是的。脚本通过 MutationObserver 监听页面变化，检测到新图片后会自动触发 API 请求。
+
+**Q: 图片缩略图没有显示？**  
+A: 图片匹配依赖 DOM 加载时机，首次可能需要等待 3 秒的延迟重试。如果仍无显示，请打开浏览器控制台（F12）搜索 `[RP]` 日志协助排查。
 
 ---
 
@@ -157,4 +186,3 @@ Feel free to connect on WeChat to discuss **AI programming** and **AI image gene
 <p align="center">
   <img src="assets/wechat-qr.jpg" alt="iLab WeChat QR Code" width="240" />
 </p>
-
