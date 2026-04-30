@@ -209,16 +209,14 @@ function updateFab() {
 
 function updateFooter() {
     const allP = allRounds.flatMap(r => r.prompts);
-    const selP = allP.filter(p => p.selected);
-    const selImages = selP.flatMap(p => p.imageUrls);
+    const selCount = allP.filter(p => p.selected).length;
     const btn = document.getElementById('rp-dl-sel');
     if (btn) {
-        btn.disabled = selImages.length === 0;
-        btn.innerHTML = `${SVG.download} 下载选中 (${selImages.length})`;
+        btn.disabled = selCount === 0;
+        btn.innerHTML = `${SVG.download} 下载选中 (${selCount})`;
     }
-    const allImages = allP.flatMap(p => p.imageUrls);
     const allBtn = document.getElementById('rp-dl-all');
-    if (allBtn) allBtn.innerHTML = `${SVG.download} 全部下载 (${allImages.length})`;
+    if (allBtn) allBtn.innerHTML = `${SVG.download} 全部下载 (${allP.length})`;
 }
 
 function toggleSelectAll() {
@@ -262,7 +260,34 @@ async function downloadAll() {
     }
 }
 
+// 懒解析：在渲染前尝试从 DOM 匹配 fileIds 到图片 URL
+function resolveFileIds() {
+    const allP = allRounds.flatMap(r => r.prompts);
+    for (const item of allP) {
+        if (item.imageUrls.length > 0 || !item.fileIds || item.fileIds.length === 0) continue;
+        for (const fid of item.fileIds) {
+            const img = document.querySelector(`img[src*="${fid}"]`);
+            if (img && img.src && !item.imageUrls.includes(img.src)) {
+                item.imageUrls.push(img.src);
+            }
+        }
+    }
+    // 兜底：收集所有 DOM 图片按顺序分配
+    if (allP.some(p => p.imageUrls.length === 0 && p.fileIds?.length > 0)) {
+        const domImgs = getAllDomImages();
+        const usedUrls = new Set(allP.flatMap(p => p.imageUrls));
+        const unused = domImgs.filter(u => !usedUrls.has(u));
+        let idx = 0;
+        for (const item of allP) {
+            if (item.imageUrls.length === 0 && idx < unused.length) {
+                item.imageUrls = [unused[idx++]];
+            }
+        }
+    }
+}
+
 function renderPanel() {
+    resolveFileIds(); // 每次渲染前尝试解析图片
     const body = document.getElementById('rp-body');
     if (!body) return;
     body.innerHTML = '';
@@ -438,25 +463,30 @@ function extractFileIdsFromParts(parts) {
 }
 
 function getAllDomImages() {
-    const selectors = [
-        'img[src*="oaiusercontent"]',
-        'img[src*="files.oaiusercontent.com"]',
-        'img[src*="openai.com/files"]',
-        '[data-message-id] img[src^="https"][alt]:not([src*="cdn.openai"])',
-    ];
-    return [...document.querySelectorAll(selectors.join(','))]
-        .map(i => i.src)
-        .filter(s => s.startsWith('http') && !s.includes('favicon') && !s.includes('sprites'));
+    // 在主聊天区内查找所有可能的生成图片
+    const mainArea = document.querySelector('#thread') || document.querySelector('main') || document.body;
+    const allImgs = [...mainArea.querySelectorAll('img[src^="https"]')];
+    const results = allImgs
+        .filter(img => {
+            const s = img.src;
+            if (s.includes('cdn.openai.com') || s.includes('favicon') || s.includes('sprites') || s.includes('avatar') || s.includes('og.png')) return false;
+            if (s.includes('oaiusercontent') || s.includes('openai.com/file') || s.includes('dalleprodsec')) return true;
+            if (img.naturalWidth >= 100 || img.width >= 100) return true;
+            if (img.alt && img.alt.length > 5) return true;
+            return false;
+        })
+        .map(img => img.src);
+    log('🖼️ getAllDomImages:', results.length, '张');
+    return [...new Set(results)];
 }
 
 function getImagesFromDomByMsgId(msgId) {
     if (!msgId) return [];
-    // 先精确匹配 data-message-id
     let el = document.querySelector(`[data-message-id="${msgId}"]`);
     if (el) {
         const imgs = [...el.querySelectorAll('img[src^="https"]')]
             .map(i => i.src)
-            .filter(s => s.includes('oaiusercontent') || s.includes('openai'));
+            .filter(s => !s.includes('cdn.openai.com') && !s.includes('favicon') && !s.includes('sprites'));
         if (imgs.length) return imgs;
     }
     return [];
@@ -473,7 +503,7 @@ function buildRounds(conversationData) {
     let lastAssistantMsgId = null;
 
     // Helper: add prompt to current round
-    function addPrompt(prompt, source, imageUrls, toolMsgId) {
+    function addPrompt(prompt, source, imageUrls, toolMsgId, fileIds) {
         if (!currentRound) {
             currentRound = { roundIndex: rounds.length + 1, userText: '...', prompts: [] };
             rounds.push(currentRound);
@@ -486,6 +516,7 @@ function buildRounds(conversationData) {
             prompt: cleaned,
             source,
             imageUrls,
+            fileIds: fileIds || [],
             selected: false,
             toolMsgId,
             lastAssistantMsgId,
@@ -502,12 +533,18 @@ function buildRounds(conversationData) {
         const msgId = msg.id;
 
         if (role === 'user') {
+            // 跳过 system context 等非真实用户消息
+            const firstPart = parts?.[0];
+            if (ct === 'user_editable_context') continue;
             currentRound = { roundIndex: rounds.length + 1, userText: '', prompts: [] };
-            const up = parts?.[0];
-            currentRound.userText = typeof up === 'string' ? up.substring(0,40) : '';
+            const up = typeof firstPart === 'string' ? firstPart.substring(0,40) : '';
+            currentRound.userText = up;
             rounds.push(currentRound);
             lastAssistantMsgId = null;
         }
+
+        // 跳过 system 角色
+        if (role === 'system') continue;
 
         if (role === 'assistant') lastAssistantMsgId = msgId;
 
@@ -520,19 +557,20 @@ function buildRounds(conversationData) {
 
         if (role === 'tool' && ct === 'multimodal_text' && Array.isArray(parts)) {
             const imgUrls = extractImageUrlsFromParts(parts);
+            const fids = extractFileIdsFromParts(parts);
             for (const part of parts) {
                 if (typeof part === 'string' && part.startsWith('Model caption:')) {
                     const cap = part.substring('Model caption:'.length).trim();
-                    if (cap.length > 20) addPrompt(cap, 'caption', imgUrls, msgId);
+                    if (cap.length > 20) addPrompt(cap, 'caption', imgUrls, msgId, fids);
                 }
                 if (part && typeof part === 'object' && part.metadata) {
                     const gen = part.metadata.generation;
-                    if (typeof gen === 'string' && gen.length > 20) addPrompt(gen, 'generation', imgUrls, msgId);
-                    else if (gen?.prompt?.length > 20) addPrompt(gen.prompt, 'gen.prompt', imgUrls, msgId);
+                    if (typeof gen === 'string' && gen.length > 20) addPrompt(gen, 'generation', imgUrls, msgId, fids);
+                    else if (gen?.prompt?.length > 20) addPrompt(gen.prompt, 'gen.prompt', imgUrls, msgId, fids);
                     const pd = part.metadata.dalle;
                     if (pd) {
                         const rp = pd.revised_prompt || (pd.prompt?.length > 10 ? pd.prompt : null);
-                        if (rp) addPrompt(rp, 'dalle', imgUrls, msgId);
+                        if (rp) addPrompt(rp, 'dalle', imgUrls, msgId, fids);
                     }
                 }
             }
@@ -553,7 +591,10 @@ function buildRounds(conversationData) {
         }
     }
 
-    return rounds.filter(r => r.prompts.length > 0);
+    // 重新编号轮次（过滤空轮后）
+    const filtered = rounds.filter(r => r.prompts.length > 0);
+    filtered.forEach((r, i) => r.roundIndex = i + 1);
+    return filtered;
 }
 
 function extractPromptsFromCode(codeText) {
