@@ -25,12 +25,12 @@ A floating button (🖌) will appear in the bottom-right corner whenever revised
 - ✅ Multi-strategy extraction (code blocks, tool messages, DALL-E metadata)
 - ✅ Cleans up internal control tokens like `<|has_watermark|>`
 
-**v4.0 — Visual Management**
-- 🖼️ **Thumbnail preview** — each prompt card shows its generated image thumbnail
-- ☑️ **Multi-select** — checkbox on every card, "Select All" in header
-- 📥 **Batch download** — download selected or all images in one click
-- 🔲 **Round grouping** — multi-turn conversations are visually separated with dividers (Round 1, Round 2…)
-- 🖼️ **Image gallery** — expand a card to see full-size images, click to open in new tab
+**v5.0 — Visual Management & Batch Downloads**
+- 🖼️ **Thumbnail hover preview** — hover over any thumbnail to smoothly reveal a large, uncropped high-res preview
+- ☑️ **Multi-select & ZIP Batch download** — download all, selected, or per-round images dynamically packaged into a `.zip` archive
+- 🔲 **Round grouping** — multi-turn conversations are visually separated with dividers and dedicated "Download Round" buttons
+- 🛡️ **Auto-refresh** — handles API `401 Unauthorized` token expirations automatically in the background
+- 🚦 **Rate limiting** — elegantly throttles API requests to prevent `429 Too Many Requests` errors on active conversations
 
 **UI/UX**
 - ✅ Floating button with badge count — non-intrusive, always accessible
@@ -101,12 +101,12 @@ The script uses `@grant none`, meaning it runs in the page's own JavaScript cont
 - ✅ 多策略提取（代码块、tool 消息、DALL-E metadata）
 - ✅ 自动清除 `<|has_watermark|>` 等内部控制标记
 
-**v4.0 — 可视化管理**
-- 🖼️ **缩略图预览** — 每条提示词卡片前展示对应图片的缩略图
-- ☑️ **多选操作** — 每张卡片可勾选，支持全选/取消全选
-- 📥 **批量下载** — 一键下载选中或全部图片
-- 🔲 **轮次分组** — 多轮对话用分割线隔开（第 1 轮、第 2 轮……）
-- 🖼️ **图片画廊** — 展开卡片查看完整图片，点击可在新标签页打开
+**v5.0 — 视觉化管理与批量下载**
+- 🖼️ **缩略图悬浮预览** — 鼠标悬停在提示词缩略图上时，左侧会平滑浮出无裁切的高清大图预览
+- 📥 **ZIP 批量打包下载** — 支持“下载全部”、“下载选中”以及“单轮下载”，所有批量下载会自动打包为 `.zip` 文件，告别浏览器弹窗风暴
+- 🔲 **对话轮次分组** — 多轮生成的图片会通过分割线清晰分组，每组带有独立的“下载本轮”按钮
+- 🛡️ **Token 自动刷新** — 完美解决长时间挂机导致的 API `401` 错误，在后台自动无感刷新会话凭证
+- 🚦 **智能限流机制** — 优化数据拉取频率，避免频繁请求触发 ChatGPT 的 `429` 频率限制
 
 **界面体验**
 - ✅ 悬浮按钮 + 角标计数，不遮挡页面内容

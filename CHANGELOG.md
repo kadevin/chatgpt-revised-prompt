@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [5.0.0] - 2026-05-01
+
+### Added
+- **ZIP Batch Download**: Batch downloading (all, selected, or per-round) now packages images into a single `.zip` archive via JSZip, avoiding browser spam.
+- **Hover Preview**: Hovering over a thumbnail now smoothly reveals a large, uncropped high-res preview image floating to the left.
+- **Round Download**: Added a dedicated "下载本轮" (Download Round) button to easily grab all images generated in a specific conversation turn.
+- **Auto Token Refresh**: Automatically refreshes the session token via `/api/auth/session` if it expires, fixing the `401 API Error` on long sessions.
+
+### Changed
+- **Unified UI Theme**: Checkboxes, download buttons, and all UI elements have been standardized to the "ChatGPT Green" (`#10a37f`) color scheme.
+- **Clean Numbering**: Replaced internal data source tags (Caption/DALL-E) with simple, sequential numbers (`#1`, `#2`) for cleaner readability.
+- **Gallery Removal**: Removed the expanded card image gallery to reduce UI clutter, fully replacing it with the new hover preview system.
+- **Throttling**: API requests are now throttled to prevent spamming the backend and gracefully handle `429 Too Many Requests` limits.
+
+### Fixed
+- Fixed custom checkbox rendering to guarantee consistent green styling across Safari and Chrome, bypassing native browser styling overrides.
+- Fixed hover image cropping issue by ensuring preview container dynamically scales with the image's original aspect ratio.
+- Fixed the issue where switching back to old conversations triggered redundant data fetches.
+
+---
+
 ## [4.0.0] - 2026-04-30
 
 ### Added

@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT 图片生成优化提示词提取器
 // @namespace    https://github.com/kadevin/chatgpt-revised-prompt
-// @version      4.0.0
+// @version      5.0.0
 // @description  提取 ChatGPT 图片生成优化提示词，支持缩略图预览、多选批量下载
 // @author       iLab
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
 // @run-at       document-idle
 // @grant        none
+// @require      https://cdn.jsdelivr.net/npm/jszip@3/dist/jszip.min.js
 // @license      MIT
 // ==/UserScript==
 (function () {
@@ -19,17 +20,48 @@ function getConversationId() {
     const m = location.pathname.match(/\/c\/([a-f0-9-]+)/);
     return m ? m[1] : null;
 }
+let _cachedToken = null;
+let _tokenExpiry = 0;
+
 function getAccessToken() {
+    // 先从 DOM 获取
     try {
         const el = document.getElementById('client-bootstrap');
-        if (el) { const d = JSON.parse(el.textContent); return d?.accessToken || d?.session?.accessToken || null; }
+        if (el) {
+            const d = JSON.parse(el.textContent);
+            const t = d?.accessToken || d?.session?.accessToken || null;
+            if (t) { _cachedToken = t; _tokenExpiry = Date.now() + 8 * 60 * 1000; return t; }
+        }
     } catch(e) {}
+    // 返回缓存的 token（如果未过期）
+    if (_cachedToken && Date.now() < _tokenExpiry) return _cachedToken;
+    return null;
+}
+
+async function refreshAccessToken() {
+    try {
+        log('🔑 刷新 access token...');
+        const resp = await fetch('https://chatgpt.com/api/auth/session', { credentials: 'include' });
+        if (resp.ok) {
+            const data = await resp.json();
+            const t = data?.accessToken;
+            if (t) {
+                _cachedToken = t;
+                _tokenExpiry = Date.now() + 8 * 60 * 1000; // 缓存 8 分钟
+                log('🔑 Token 已刷新');
+                return t;
+            }
+        }
+    } catch(e) { log('⚠️ 刷新 token 失败:', e.message); }
     return null;
 }
 
 // 全局状态：按轮次分组
 let allRounds = []; // [{roundIndex, userText, prompts:[{prompt,source,imageUrls,selected,id}]}]
 const seenPrompts = new Set();
+let lastFetchTime = 0; // 请求节流
+let lastFetchConvId = ''; // 避免重复请求同一对话
+const FETCH_COOLDOWN = 5000; // 最小请求间隔 5 秒
 
 function injectStyles() {
     if (document.getElementById('rp-styles')) return;
@@ -64,8 +96,14 @@ html.dark .rp-count-badge{background:rgba(255,255,255,.08);color:#9ca3af}
 .rp-body{overflow-y:auto;flex:1;padding:6px}
 .rp-round-divider{display:flex;align-items:center;gap:8px;margin:10px 4px 6px;font-size:11px;
     font-weight:600;color:#9ca3af}
-.rp-round-divider::before,.rp-round-divider::after{content:'';flex:1;height:1px;background:rgba(0,0,0,.08)}
+.rp-round-divider::before{content:'';flex:1;height:1px;background:rgba(0,0,0,.08)}
+.rp-round-divider::after{content:'';flex:1;height:1px;background:rgba(0,0,0,.08)}
 html.dark .rp-round-divider::before,html.dark .rp-round-divider::after{background:rgba(255,255,255,.08)}
+.rp-round-dl{font-size:10px;padding:2px 7px;border:1px solid rgba(16,163,127,.3);border-radius:4px;
+    background:none;color:#10a37f;cursor:pointer;font-family:inherit;white-space:nowrap;
+    flex-shrink:0;display:inline-flex;align-items:center;gap:3px}
+.rp-round-dl:hover{background:rgba(16,163,127,.08)}
+html.dark .rp-round-dl{border-color:rgba(16,163,127,.4);color:#10a37f}
 .rp-card{border-radius:10px;margin-bottom:5px;overflow:hidden;
     border:1px solid rgba(0,0,0,.07);transition:border-color .18s,background .18s}
 .rp-card:hover{border-color:rgba(16,163,127,.25)}
@@ -78,28 +116,36 @@ html.dark .rp-card.selected{background:rgba(16,163,127,.08)}
 .rp-card-hdr:hover{background:rgba(0,0,0,.02)}
 html.dark .rp-card-hdr{color:#9ca3af}
 html.dark .rp-card-hdr:hover{background:rgba(255,255,255,.03)}
-.rp-cb{width:15px;height:15px;accent-color:#10a37f;cursor:pointer;flex-shrink:0;margin:0}
-.rp-thumb-strip{display:flex;gap:3px;flex-shrink:0}
+.rp-cb{appearance:none;-webkit-appearance:none;width:16px;height:16px;
+    border:1px solid rgba(0,0,0,.2);border-radius:4px;background:#fff;
+    cursor:pointer;flex-shrink:0;margin:0;position:relative;transition:all .15s}
+html.dark .rp-cb{background:transparent;border-color:rgba(255,255,255,.3)}
+.rp-cb:checked{background:#10a37f;border-color:#10a37f}
+html.dark .rp-cb:checked{background:#10a37f;border-color:#10a37f}
+.rp-cb:checked::after{content:'';position:absolute;left:4.5px;top:1.5px;width:4px;height:8px;
+    border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+.rp-thumb-strip{display:flex;gap:3px;flex-shrink:0;position:relative}
 .rp-thumb{width:48px;height:48px;object-fit:cover;border-radius:6px;
-    border:1px solid rgba(0,0,0,.08);background:#f3f4f6}
+    border:1px solid rgba(0,0,0,.08);background:#f3f4f6;cursor:pointer}
 html.dark .rp-thumb{border-color:rgba(255,255,255,.1);background:#374151}
 .rp-thumb-ph{width:48px;height:48px;border-radius:6px;border:1px dashed rgba(0,0,0,.12);
     background:rgba(0,0,0,.03);display:flex;align-items:center;justify-content:center;flex-shrink:0}
 html.dark .rp-thumb-ph{border-color:rgba(255,255,255,.1);background:rgba(255,255,255,.03)}
+.rp-hover-preview{position:fixed;z-index:100000;pointer-events:none;
+    max-width:320px;max-height:420px;width:auto;height:auto;
+    border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.35);
+    opacity:0;transition:opacity .18s}
+.rp-hover-preview.show{opacity:1}
 .rp-card-meta{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0}
-.rp-tag{padding:2px 5px;border-radius:4px;font-size:9px;font-weight:600;align-self:flex-start;
-    background:rgba(16,163,127,.1);color:#10a37f;line-height:1.4}
+.rp-tag{padding:1px 5px;border-radius:4px;font-size:10px;font-weight:600;align-self:flex-start;
+    background:rgba(0,0,0,.06);color:#9ca3af;line-height:1.4;font-family:'SF Mono',Menlo,monospace}
+html.dark .rp-tag{background:rgba(255,255,255,.08);color:#6b7280}
 .rp-preview{font-size:11px;color:#aaa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 html.dark .rp-preview{color:#555}
 .rp-arrow{flex-shrink:0;transition:transform .18s;color:#10a37f;opacity:.7}
 .rp-card.open .rp-arrow{transform:rotate(90deg)}
 .rp-card-body{display:none;padding:0 10px 10px}
 .rp-card.open .rp-card-body{display:block}
-.rp-img-gallery{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}
-.rp-img-gallery img{width:80px;height:80px;object-fit:cover;border-radius:7px;
-    cursor:pointer;border:1px solid rgba(0,0,0,.08);transition:transform .15s}
-.rp-img-gallery img:hover{transform:scale(1.03)}
-html.dark .rp-img-gallery img{border-color:rgba(255,255,255,.1)}
 .rp-txt{background:rgba(0,0,0,.03);border-radius:7px;padding:9px 11px;
     font-family:'SF Mono',Menlo,Consolas,monospace;font-size:11px;line-height:1.6;
     white-space:pre-wrap;word-break:break-word;max-height:160px;overflow-y:auto;color:#374151}
@@ -118,13 +164,14 @@ html.dark .rp-footer{border-top-color:rgba(255,255,255,.06)}
 .rp-dl-sel-btn,.rp-dl-all-btn{display:inline-flex;align-items:center;justify-content:center;
     gap:5px;padding:7px 10px;border:none;border-radius:8px;font-size:12px;font-weight:500;
     cursor:pointer;font-family:inherit;transition:all .15s}
-.rp-dl-sel-btn{background:#3b82f6;color:#fff;flex:1}
-.rp-dl-sel-btn:hover{background:#2563eb}
+.rp-dl-sel-btn{background:#10a37f;color:#fff;flex:1}
+.rp-dl-sel-btn:hover{background:#0d8a6b}
 .rp-dl-sel-btn:disabled{background:#9ca3af;cursor:not-allowed}
-.rp-dl-all-btn{background:rgba(0,0,0,.05);color:#374151;flex:1}
-.rp-dl-all-btn:hover{background:rgba(0,0,0,.09)}
-html.dark .rp-dl-all-btn{background:rgba(255,255,255,.08);color:#d1d5db}
-html.dark .rp-dl-all-btn:hover{background:rgba(255,255,255,.12)}
+html.dark .rp-dl-sel-btn:disabled{background:rgba(255,255,255,.15);color:rgba(255,255,255,.3)}
+.rp-dl-all-btn{background:rgba(16,163,127,.1);color:#10a37f;flex:1}
+.rp-dl-all-btn:hover{background:rgba(16,163,127,.2)}
+html.dark .rp-dl-all-btn{background:rgba(16,163,127,.15);color:#10a37f}
+html.dark .rp-dl-all-btn:hover{background:rgba(16,163,127,.25)}
 .rp-toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(16px);
     background:#10a37f;color:#fff;padding:7px 18px;border-radius:8px;font-size:13px;
     z-index:99999;opacity:0;transition:all .28s;pointer-events:none}
@@ -239,25 +286,60 @@ async function downloadImage(url, filename) {
     } catch(e) { window.open(url, '_blank'); }
 }
 
+// ===== ZIP 打包下载 =====
+function getJSZip() {
+    // 通过 @require 加载，直接使用全局 JSZip
+    if (typeof JSZip !== 'undefined') return JSZip;
+    if (window.JSZip) return window.JSZip;
+    return null;
+}
+
+async function downloadAsZip(urls, zipName) {
+    if (!urls.length) { toast('没有可下载的图片'); return; }
+    try {
+        toast(`正在打包 ${urls.length} 张图片...`);
+        const ZipClass = getJSZip();
+        if (!ZipClass) throw new Error('JSZip 未加载');
+        const zip = new ZipClass();
+        let done = 0;
+        for (let i = 0; i < urls.length; i++) {
+            try {
+                const r = await fetch(urls[i], { credentials: 'include' });
+                const blob = await r.blob();
+                const ext = blob.type?.includes('png') ? 'png' : blob.type?.includes('webp') ? 'webp' : 'jpg';
+                zip.file(`image-${i+1}.${ext}`, blob);
+                done++;
+            } catch(e) { log('⚠️ 图片下载失败:', urls[i]); }
+        }
+        if (done === 0) { toast('所有图片下载失败'); return; }
+        const content = await zip.generateAsync({ type: 'blob' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(content);
+        a.download = zipName;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+        toast(`已打包 ${done} 张图片`);
+    } catch(e) {
+        log('❌ ZIP 打包失败:', e.message);
+        toast('打包失败，改为逐张下载...');
+        for (let i = 0; i < urls.length; i++) {
+            await downloadImage(urls[i], `chatgpt-img-${i+1}.png`);
+            await new Promise(r => setTimeout(r, 300));
+        }
+    }
+}
+
 async function downloadSelected() {
     const selP = allRounds.flatMap(r => r.prompts).filter(p => p.selected);
     const urls = selP.flatMap(p => p.imageUrls);
     if (!urls.length) return;
-    toast(`开始下载 ${urls.length} 张图片...`);
-    for (let i = 0; i < urls.length; i++) {
-        await downloadImage(urls[i], `chatgpt-img-${Date.now()}-${i+1}.png`);
-        await new Promise(r => setTimeout(r, 300));
-    }
+    await downloadAsZip(urls, `chatgpt-selected-${urls.length}imgs.zip`);
 }
 
 async function downloadAll() {
     const urls = allRounds.flatMap(r => r.prompts).flatMap(p => p.imageUrls);
     if (!urls.length) { toast('没有可下载的图片'); return; }
-    toast(`开始下载全部 ${urls.length} 张图片...`);
-    for (let i = 0; i < urls.length; i++) {
-        await downloadImage(urls[i], `chatgpt-img-${Date.now()}-${i+1}.png`);
-        await new Promise(r => setTimeout(r, 300));
-    }
+    await downloadAsZip(urls, `chatgpt-all-${urls.length}imgs.zip`);
 }
 
 // 懒解析：在渲染前尝试从 DOM 匹配 fileIds 到图片 URL
@@ -292,28 +374,41 @@ function renderPanel() {
     if (!body) return;
     body.innerHTML = '';
 
+    let globalIdx = 0;
     for (const round of allRounds) {
         if (!round.prompts.length) continue;
         const div = document.createElement('div');
         div.className = 'rp-round-divider';
-        div.textContent = `第 ${round.roundIndex} 轮`;
+        div.innerHTML = `第 ${round.roundIndex} 轮`;
+
+        // 本轮下载按钮（紧跟标题）
+        const roundImgs = round.prompts.flatMap(p => p.imageUrls);
+        if (roundImgs.length > 0) {
+            const btn = document.createElement('button');
+            btn.className = 'rp-round-dl';
+            btn.innerHTML = `${SVG.download} 下载 (${roundImgs.length})`;
+            btn.onclick = async (e) => {
+                e.stopPropagation();
+                await downloadAsZip(roundImgs, `chatgpt-round${round.roundIndex}-${roundImgs.length}imgs.zip`);
+            };
+            div.appendChild(btn);
+        }
+
         body.appendChild(div);
 
         for (const item of round.prompts) {
-            body.appendChild(buildCard(item));
+            globalIdx++;
+            body.appendChild(buildCard(item, globalIdx));
         }
     }
     updateFab(); updateFooter();
 }
 
-function buildCard(item) {
+function buildCard(item, index) {
     const card = document.createElement('div');
     card.className = 'rp-card';
     card.dataset.id = item.id;
 
-    const sourceMap = { code:'Code', caption:'Caption', generation:'Gen', 'gen.prompt':'Gen',
-        dalle:'DALL-E', 'meta.dalle':'DALL-E', ig_meta:'IG', agg:'Agg' };
-    const tagLabel = sourceMap[item.source] || item.source;
     const preview = item.prompt.substring(0,55).replace(/\n/g,' ') + (item.prompt.length>55?'...':'');
 
     // Build thumbnail strip (show up to 2 thumbs in header)
@@ -321,21 +416,11 @@ function buildCard(item) {
     if (item.imageUrls.length > 0) {
         thumbsHtml = '<div class="rp-thumb-strip">';
         item.imageUrls.slice(0, 2).forEach(url => {
-            thumbsHtml += `<img class="rp-thumb" src="${escHtml(url)}" loading="lazy" onerror="this.style.display='none'">`;
+            thumbsHtml += `<img class="rp-thumb" src="${escHtml(url)}" loading="lazy" data-preview-url="${escHtml(url)}" onerror="this.style.display='none'">`;
         });
         thumbsHtml += '</div>';
     } else {
         thumbsHtml = `<div class="rp-thumb-ph">${SVG.img}</div>`;
-    }
-
-    // Gallery for expanded view
-    let galleryHtml = '';
-    if (item.imageUrls.length > 0) {
-        galleryHtml = '<div class="rp-img-gallery">';
-        item.imageUrls.forEach(url => {
-            galleryHtml += `<img src="${escHtml(url)}" loading="lazy" title="点击新标签打开" onclick="window.open('${escHtml(url)}','_blank')" onerror="this.style.display='none'">`;
-        });
-        galleryHtml += '</div>';
     }
 
     card.innerHTML = `
@@ -343,13 +428,12 @@ function buildCard(item) {
             <input type="checkbox" class="rp-cb" ${item.selected?'checked':''}>
             ${thumbsHtml}
             <div class="rp-card-meta">
-                <span class="rp-tag">${escHtml(tagLabel)}</span>
+                <span class="rp-tag">#${index || '?'}</span>
                 <span class="rp-preview">${escHtml(preview)}</span>
             </div>
             ${SVG.arrow}
         </div>
         <div class="rp-card-body">
-            ${galleryHtml}
             <div class="rp-txt">${escHtml(item.prompt)}</div>
             <div class="rp-card-acts">
                 <button class="rp-copy-btn">${SVG.copy} 复制提示词</button>
@@ -367,8 +451,38 @@ function buildCard(item) {
         updateFooter();
     };
 
+    // 缩略图悬浮预览 + 点击新标签打开
+    card.querySelectorAll('.rp-thumb').forEach(thumb => {
+        const previewUrl = thumb.dataset.previewUrl;
+        let previewEl = null;
+
+        thumb.addEventListener('mouseenter', e => {
+            e.stopPropagation();
+            if (!previewUrl) return;
+            if (!previewEl) {
+                previewEl = document.createElement('img');
+                previewEl.className = 'rp-hover-preview';
+                previewEl.src = previewUrl;
+                document.body.appendChild(previewEl);
+            }
+            const rect = thumb.getBoundingClientRect();
+            previewEl.style.top = Math.max(8, rect.top - 96) + 'px';
+            previewEl.style.left = Math.max(8, rect.left - 252) + 'px';
+            requestAnimationFrame(() => previewEl.classList.add('show'));
+        });
+
+        thumb.addEventListener('mouseleave', () => {
+            if (previewEl) previewEl.classList.remove('show');
+        });
+
+        thumb.addEventListener('click', e => {
+            e.stopPropagation();
+            if (previewUrl) window.open(previewUrl, '_blank');
+        });
+    });
+
     hdr.onclick = e => {
-        if (e.target === cb) return;
+        if (e.target === cb || e.target.classList?.contains('rp-thumb')) return;
         card.classList.toggle('open');
     };
 
@@ -668,22 +782,67 @@ function enrichWithDomImages(rounds, conversationData) {
 }
 
 // ===== API 主流程 =====
-async function fetchAndExtractPrompts() {
+async function fetchAndExtractPrompts(forceRefresh) {
     const convId = getConversationId();
     if (!convId) return;
-    const token = getAccessToken();
-    if (!token) { showStatus('无法获取 token'); return; }
 
+    // 节流：避免频繁请求
+    const now = Date.now();
+    if (!forceRefresh && now - lastFetchTime < FETCH_COOLDOWN) {
+        log('⏸️ 请求节流，跳过');
+        return;
+    }
+    // 避免重复请求同一对话（已有数据时）
+    if (!forceRefresh && convId === lastFetchConvId && allRounds.length > 0) {
+        log('⏸️ 对话已加载，跳过重复请求');
+        return;
+    }
+
+    let token = getAccessToken();
+    if (!token) {
+        // 尝试刷新 token
+        token = await refreshAccessToken();
+        if (!token) { showStatus('无法获取 token，请刷新页面'); return; }
+    }
+
+    lastFetchTime = now;
     log('📡 请求对话数据:', convId);
     showStatus('正在获取对话数据...');
 
     try {
-        const resp = await fetch(`https://chatgpt.com/backend-api/conversation/${convId}`, {
+        let resp = await fetch(`https://chatgpt.com/backend-api/conversation/${convId}`, {
             headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
             credentials: 'include',
         });
-        if (!resp.ok) { showStatus('API错误: ' + resp.status); return; }
+
+        // Token 过期：自动刷新并重试一次
+        if (resp.status === 401 || resp.status === 403) {
+            log('🔑 Token 过期，尝试刷新...');
+            token = await refreshAccessToken();
+            if (token) {
+                resp = await fetch(`https://chatgpt.com/backend-api/conversation/${convId}`, {
+                    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                });
+            }
+        }
+
+        // 限流处理
+        if (resp.status === 429) {
+            log('⚠️ 请求被限流，60秒后重试');
+            showStatus('请求太频繁，稍后重试...');
+            setTimeout(() => fetchAndExtractPrompts(true), 60000);
+            return;
+        }
+
+        if (!resp.ok) {
+            log('❌ API 返回:', resp.status);
+            showStatus(`API错误: ${resp.status}`);
+            return;
+        }
+
         const data = await resp.json();
+        lastFetchConvId = convId;
 
         allRounds = buildRounds(data);
         seenPrompts.clear();
@@ -709,7 +868,8 @@ async function fetchAndExtractPrompts() {
             }, 3000);
         }
     } catch(e) {
-        log('❌', e.message); showStatus('请求失败: ' + e.message);
+        log('❌', e.message);
+        showStatus('请求失败: ' + e.message);
     }
 }
 
@@ -720,10 +880,11 @@ function startMonitoring() {
         if (location.href !== lastUrl) {
             lastUrl = location.href;
             allRounds = []; seenPrompts.clear();
+            lastFetchConvId = ''; // 重置，允许新对话请求
             const body = document.getElementById('rp-body'); if (body) body.innerHTML = '';
             const panel = document.getElementById('rp-panel'); if (panel) panel.classList.remove('open');
             updateFab(); updateFooter();
-            if (getConversationId()) setTimeout(() => fetchAndExtractPrompts(), 1500);
+            if (getConversationId()) setTimeout(() => fetchAndExtractPrompts(), 2000);
         }
     };
     setInterval(checkUrl, 1000);
@@ -735,12 +896,12 @@ function startMonitoring() {
             const imgs = getAllDomImages();
             const total = allRounds.reduce((s,r) => s + r.prompts.length, 0);
             if (imgs.length > 0 && total === 0 && getConversationId()) fetchAndExtractPrompts();
-            else if (imgs.length > 0 && total > 0) {
-                // 检查是否有提示词还没图片
+            else if (total > 0) {
+                // 仅更新图片匹配，不再重复 API 请求
                 const noImgCount = allRounds.flatMap(r => r.prompts).filter(p => p.imageUrls.length === 0).length;
-                if (noImgCount > 0) { enrichWithDomImages(allRounds, null); renderPanel(); }
+                if (noImgCount > 0 && imgs.length > 0) { enrichWithDomImages(allRounds, null); renderPanel(); }
             }
-        }, 3000);
+        }, 5000); // 从 3 秒改为 5 秒，减少触发频率
     });
     obs.observe(document.body, { childList: true, subtree: true });
 
