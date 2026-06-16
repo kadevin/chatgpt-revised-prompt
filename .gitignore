@@ -1,4 +1,5 @@
 .DS_Store
+tests/
 *.log
 node_modules/
 GREASYFORK_DESCRIPTION.md
